@@ -35,6 +35,7 @@ class ImageAnalysisService:
 
     def _load_model(self):
         """내부 메서드: 실제 모델 로딩 로직"""
+        #todo: flash attention 적용, window에서..
         try:
             # RTX 3070 Ti (Ampere) -> bfloat16 지원 + Flash Attention 권장
             self.model = Qwen2VLForConditionalGeneration.from_pretrained(

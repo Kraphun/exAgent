@@ -14,7 +14,6 @@ print(">>> start Degradation app page")
 from PIL import Image
 import shutil
 
-from main import ImageAnalysisService, create_workflow
 
 st.title("🔍 AI Image Degradation Inspector")
 st.markdown("""
@@ -31,22 +30,26 @@ def get_ai_service():
     이 함수는 앱이 실행되는 동안 최초 1회만 실행되며,
     이후에는 이미 로드된 인스턴스를 반환합니다.
     """
+    # lazy import : 일반 import시 stremlit 캐싱 문제 발생함
+    from main import ImageAnalysisService, create_workflow
+
     with st.spinner("AI 모델을 GPU(RTX 3070 Ti)에 로드 중입니다... 잠시만 기다려주세요."):
         # 3070 Ti 메모리 최적화를 위해 로드
         service = ImageAnalysisService()
-        return service
+        return service, create_workflow
 
 with st.sidebar:
     st.header("System Status")
     try:
-        ai_service = get_ai_service()
+        ai_service, create_workflow_func = get_ai_service()
+        workflow_app = create_workflow_func(ai_service)
         st.success("✅ Model Loaded (Warm State)")
         st.info(f"Device: {ai_service.device}")
     except Exception as e:
         st.error(f"❌ Model Load Failed: {e}")
         st.stop()
 
-workflow_app = create_workflow(ai_service)
+workflow_app = None
 
 
 col1, col2 = st.columns([1, 1])
@@ -56,8 +59,7 @@ with col1:
     uploaded_file = st.file_uploader("분석할 이미지를 선택하세요", type=["jpg", "png", "jpeg"])
 
     if uploaded_file is not None:
-        # 업로드된 파일을 임시 경로에 저장 (백엔드가 경로를 요구하므로)
-        # 실무에서는 tempfile 라이브러리를 쓰거나 S3에 올립니다.
+        # 업로드된 파일을 임시 경로에 저장
         os.makedirs("temp", exist_ok=True)
         temp_path = os.path.join("temp", uploaded_file.name)
         
@@ -99,8 +101,3 @@ with col2:
                     
     else:
         st.info("왼쪽에서 이미지를 먼저 업로드해주세요.")
-
-# ---------------------------------------------------------
-# 5. 리소스 정리 (Optional)
-# ---------------------------------------------------------
-# 실제 배포 시에는 주기적으로 temp 폴더를 비워주는 로직이 필요합니다.
