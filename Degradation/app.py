@@ -1,9 +1,10 @@
 import streamlit as st
 import os
 
-# ---------------------------------------------------------
+# 0. 상수 및 하이퍼파라미터 설정
+ADAPTER_PATH = "checkpoints/qlora/qwen2-vl-agent-checkpoint"
+
 # 1. 페이지 기본 설정
-# ---------------------------------------------------------
 st.set_page_config(
     page_title="AI Image Inspector",
     page_icon="🔍",
@@ -21,7 +22,6 @@ st.markdown("""
 이미지를 업로드하면 훼손 여부(Blur, Noise 등)를 판단하고 리포트를 생성합니다.
 """)
 
-# ---------------------------------------------------------
 # 2. 모델 로드 (캐싱 적용)
 @st.cache_resource
 def get_ai_service():
@@ -35,8 +35,14 @@ def get_ai_service():
 
     with st.spinner("AI 모델을 GPU(RTX 3070 Ti)에 로드 중입니다... 잠시만 기다려주세요."):
         # 3070 Ti 메모리 최적화를 위해 로드
-        service = ImageAnalysisService()
+        # QLoRA 어댑터 사용시 명시적으로 경로를 주입해 둬야한다.
+        service = ImageAnalysisService(adapter_path=ADAPTER_PATH)
         return service, create_workflow
+
+
+# 3. Sidebar 생성
+workflow_app = None
+use_qlora = True
 
 with st.sidebar:
     st.header("System Status")
@@ -49,7 +55,20 @@ with st.sidebar:
         st.error(f"❌ Model Load Failed: {e}")
         st.stop()
 
-workflow_app = None
+    st.divider()
+
+    st.header("Inference Options")
+    use_qlora = st.toggle(
+        "Use Custom QLora Model",
+        value=True,
+        help="내가만든 파인튜닝 QLoRA 사용하기.",
+    )
+
+    if use_qlora:
+        st.success("✅ Custom QLoRA Adapter Activated")
+    else:
+        st.info("⚠️ Base Model Only")
+
 
 
 col1, col2 = st.columns([1, 1])
@@ -76,11 +95,18 @@ with col2:
     if uploaded_file is not None:
         analyze_btn = st.button("🚀 이미지 분석 시작", type="primary")
         
+        if use_qlora:
+            model_mode = "내가만든 QLoRA"
+        else:
+            model_mode = "Base Model - Qwen2-VL-2B-Instruct"
+
         if analyze_btn:
-            with st.spinner("AI가 이미지를 분석하고 있습니다..."):
+            with st.spinner(f"AI가 이미지를 분석하고 있습니다... ({model_mode})"):
                 try:
                     # LangGraph 워크플로우 실행
-                    inputs = {"image_path": temp_path}
+                    inputs = {"image_path": temp_path,
+                              "use_custom_model": use_qlora
+                              }
                     result = workflow_app.invoke(inputs)
                     
                     final_report = result.get("final_report", "No result generated.")

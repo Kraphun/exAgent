@@ -4,22 +4,20 @@ import os
 from PIL import Image
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
+from peft import PeftModel
 from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, END
 
-# ---------------------------------------------------------
 # 1. State 정의 (데이터 DTO 역할)
-# ---------------------------------------------------------
 class AgentState(TypedDict):
     image_path: str
+    use_custom_model: bool
     analysis_result: Optional[str]
     final_report: Optional[str]
 
-# ---------------------------------------------------------
 # 2. AI Service Class (모델 관리 및 추론 담당)
-# ---------------------------------------------------------
 class ImageAnalysisService:
-    def __init__(self, model_id: str = "Qwen/Qwen2-VL-2B-Instruct", device: str = "cuda"):
+    def __init__(self, model_id: str = "Qwen/Qwen2-VL-2B-Instruct", adapter_path: Optional[str] = None, device: str = "cuda"):
         """
         서비스 초기화 시 모델을 로드하여 메모리에 상주깁니다.
         (API 서버 시작 시 1회만 호출됨)
@@ -28,6 +26,7 @@ class ImageAnalysisService:
         self.model_id = model_id
         self.model = None
         self.processor = None
+        self.adapter_path = adapter_path
         
         print(f"[{self.__class__.__name__}] 모델 초기화 시작... Target Device: {self.device}")
         self._load_model()
@@ -38,7 +37,7 @@ class ImageAnalysisService:
         #todo: flash attention 적용, window에서..
         try:
             # RTX 3070 Ti (Ampere) -> bfloat16 지원 + Flash Attention 권장
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+            base_model = Qwen2VLForConditionalGeneration.from_pretrained(
                 self.model_id,
                 torch_dtype=torch.bfloat16,
                 device_map=self.device,
@@ -46,7 +45,7 @@ class ImageAnalysisService:
             )
         except Exception as e:
             print(f"Warning: Flash Attention 2 로드 실패. 호환 모드로 전환합니다. Error: {e}")
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+            base_model = Qwen2VLForConditionalGeneration.from_pretrained(
                 self.model_id,
                 torch_dtype=torch.float16,
                 device_map=self.device
@@ -54,9 +53,19 @@ class ImageAnalysisService:
         
         self.processor = AutoProcessor.from_pretrained(self.model_id)
 
-    def analyze_image(self, image_path: str) -> str:
+        # PEFT QLora 추가
+        if self.adapter_path and os.path.exists(self.adapter_path):
+            print(f"[{self.__class__.__name__}] Custom QLoRA 로딩 중 : {self.adapter_path}")
+            self.model = PeftModel.from_pretrained(base_model, self.adapter_path)
+        else:
+            print(f"Use Base Model only")
+            self.model = base_model
+
+
+    def analyze_image(self, image_path: str, use_custom_model: bool) -> str:
         """
         실제 추론(Inference)을 수행하는 메서드
+        use_custom_model 플래그에 따라 어댑터 활성여부 결정하도록 변경
         """
         prompt = (
             "Analyze this image technically. "
@@ -91,9 +100,23 @@ class ImageAnalysisService:
         )
         inputs = inputs.to(self.device)
 
-        # 추론
-        with torch.no_grad():
-            generated_ids = self.model.generate(**inputs, max_new_tokens=256)
+        output_text = ""
+
+        if use_custom_model and isinstance(self.model, PeftModel):
+            print(f"Custom QLoRA 모델 사용")
+            with torch.no_grad():
+                generated_ids = self.model.generate(**inputs, max_new_tokens=256)
+
+        elif not use_custom_model and isinstance(self.model, PeftModel):
+            print(f"Basemodel 사용 (QLoRA 비활성화)")
+            with self.model.disable_adapter():
+                with torch.no_grad():
+                    generated_ids = self.model.generate(**inputs, max_new_tokens=256)
+
+        else:
+            # Base model only
+            with torch.no_grad():
+                generated_ids = self.model.generate(**inputs, max_new_tokens=256)
 
         # 후처리 (Decoding)
         generated_ids_trimmed = [
@@ -105,9 +128,7 @@ class ImageAnalysisService:
         
         return output_text
 
-# ---------------------------------------------------------
-# 3. LangGraph Workflow 정의 (비즈니스 로직)
-# ---------------------------------------------------------
+# 3. main workflow
 def create_workflow(service_instance: ImageAnalysisService):
     """
     초기화된 Service Instance를 주입받아 Graph를 생성합니다.
@@ -116,14 +137,21 @@ def create_workflow(service_instance: ImageAnalysisService):
     # Node 1: 모델 추론 호출
     def detect_degradation(state: AgentState):
         image_path = state["image_path"]
+        use_custom_model = state.get("use_custom_model", True)
         print(f"\n[Workflow] 이미지 분석 요청: {image_path}")
-        result = service_instance.analyze_image(image_path)
+        print(f"[Workflow] Custom Model 사용 여부: {use_custom_model}")
+
+        result = service_instance.analyze_image(image_path, use_custom_model=use_custom_model)
         return {"analysis_result": result}
 
     # Node 2: 리포트 포맷팅
     def format_report(state: AgentState):
         result = state["analysis_result"]
-        report = f"--- [AI Master Report] ---\n{result}\n--------------------------"
+        if state.get("use_custom_model", True):
+            model_type = "Custom QLora Model"
+        else:
+            model_type = "Base Model"
+        report = f"--- [AI Master Report ({model_type})] ---\n{result}\n--------------------------"
         return {"final_report": report}
 
     # 그래프 구성
@@ -137,10 +165,13 @@ def create_workflow(service_instance: ImageAnalysisService):
 
     return workflow.compile()
 
-# ---------------------------------------------------------
-# 4. Main Execution (추후 API 서버의 lifespan과 유사)
-# ---------------------------------------------------------
+# 4. Main Execution (추후 API 서버 확장 고려)
 if __name__ == "__main__":
+
+    BASE_MODEL = "Qwen/Qwen2-VL-2B-Instruct" # 기본 모델 - sVLM 모델 Qwen2 VL 2B 선정
+    ADAPTER_PATH = "checkpoints/qlora/qwen2-vl-agent-checkpoint"  # QLoRA 어댑터 경로
+    USE_QLORA = True  # QLoRA 사용 여부
+
     # [Step 1] 서버 시작 시점 (Startup Event)
     # 서비스를 인스턴스화 합니다. 이때 모델이 GPU에 로드됩니다.
     # 이 인스턴스는 프로그램이 종료될 때까지 메모리에 유지됩니다.
@@ -151,19 +182,28 @@ if __name__ == "__main__":
     app = create_workflow(ai_service)
 
     # [Step 3] 요청 처리 (Request Handling)
-    test_image_path = "dataset/Rain100L/rainy/rain-001.png" 
+    test_image_path = "dataset/Derain/Rain100L/rainy/rain-001.png" 
 
-    # 테스트 이미지 생성
+    # 테스트 이미지 로드
     if not os.path.exists(test_image_path):
         import numpy as np
         im_array = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
         Image.fromarray(im_array).save(test_image_path)
 
     print("\n>>> [Request] 사용자 요청 도착")
-    inputs = {"image_path": test_image_path}
+    print(f"\n>>> QLora 사용 여부 : {USE_QLORA}")
+    inputs = {"image_path": test_image_path, "use_custom_model": USE_QLORA}
+    final_result = app.invoke(inputs)
+
+    print(f"\n>>> [Response] 최종 응답 전송 (Use My QLora : {USE_QLORA}):")
+    print(final_result["final_report"])
+
+    print("\n>>> [Request] 비교 테스트 시작")
+    print(f"\n>>> QLora 사용 여부 : {False}")
+    inputs = {"image_path": test_image_path, "use_custom_model": False}
     final_result = app.invoke(inputs)
     
-    print("\n>>> [Response] 최종 응답 전송:")
+    print("\n>>> [Response] 최종 응답 전송 (Base Model):")
     print(final_result["final_report"])
 
 

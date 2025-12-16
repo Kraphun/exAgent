@@ -23,7 +23,7 @@ from qwen_vl_utils import process_vision_info
 # Hyper parameters
 MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 DATA_FILE = "./Degradation/train_data_augmented.json"
-OUTPUT_DIR = "./checkpoints/qlora/qwen2-vl-agent-checkpoint"
+OUTPUT_DIR = "./checkpoints/qlora/degradation_agent_v1"
 
 # 3070 Ti (8GB) 맞춤 설정
 MAX_SEQ_LENGTH = 1024  # 이미지 크기 - 텍스트 길이 반비례하게 조절 필요
@@ -140,8 +140,8 @@ def train():
     # Set trainer
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
-        per_device_train_batch_size=1,      
-        gradient_accumulation_steps=16,     
+        per_device_train_batch_size=4,      
+        gradient_accumulation_steps=4,     
         num_train_epochs=3,                 # 데이터가 적으므로 3~5 epoch
         learning_rate=2e-4,
         logging_steps=5,
