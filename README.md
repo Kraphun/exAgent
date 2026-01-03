@@ -26,7 +26,7 @@ Qwen2-VL-2B 모델을 **QLoRA(Quantized Low-Rank Adaptation)** 방식으로 파�
 
 ---
 
-## 🏗️ 시스템 아키텍처 (Architecture)
+## 시스템 아키텍처 (Architecture)
 
 ### Workflow Overview
 사용자가 이미지를 업로드하면, Streamlit UI는 LangGraph 워크플로우를 트리거합니다. 시스템은 설정에 따라 Base Model 또는 Fine-tuned QLoRA Adapter를 로드하여 분석을 수행합니다.
@@ -40,7 +40,7 @@ graph LR
         Agent --> Detect[Node: Detect Degradation]
         Detect -->|Inference| Model{Qwen2-VL-2B}
         Model -- Load --> Adapter[Custom QLoRA Adapter]
-        Model -- Load --> Base[Base Weights (4-bit)]
+        Model -- Load --> Base["Base Weights (4-bit)"]
     end
     
     Detect --> Report[Node: Generate Report]
