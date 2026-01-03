@@ -40,7 +40,7 @@ graph LR
         Agent --> Detect[Node: Detect Degradation]
         Detect -->|Inference| Model{Qwen2-VL-2B}
         Model -- Load --> Adapter[Custom QLoRA Adapter]
-        Model -- Load --> Base["Base Weights (4-bit)"]
+        Model -- Load --> Base["Base Weights \(4-bit\)"]
     end
     
     Detect --> Report[Node: Generate Report]
